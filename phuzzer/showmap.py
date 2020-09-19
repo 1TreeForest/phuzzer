@@ -1,8 +1,9 @@
+import logging
 import os
 import shutil
-import logging
-import tempfile
 import subprocess
+import tempfile
+from .phuzzers import Phuzzer
 from .phuzzers.afl import AFL
 
 l = logging.getLogger("phuzzer.Showmap")
@@ -50,7 +51,6 @@ class Showmap:
         self.showmap_path = os.path.join(afl_dir, "afl-showmap")
 
         l.debug("showmap_path: %s", self.showmap_path)
-        l.debug("afl_path_var: %s", self.afl_path_var)
 
         # create temp
         self.work_dir = tempfile.mkdtemp(prefix='showmap-', dir='/tmp/')

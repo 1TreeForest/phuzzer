@@ -6,6 +6,7 @@ import logging.config
 import importlib
 import argparse
 import tarfile
+import signal
 import shutil
 import socket
 import time
@@ -52,6 +53,8 @@ def main():
                         action='store_true', default=False)
     parser.add_argument('--reportdir', help="The directory to use for the reports.", default=".")
     parser.add_argument('-p','--phuzzer-type', '--fuzzer-type', help="Which phuzzer are you using, AFL, Witcher, AFL_MULTICB.", default=Phuzzer.AFL)
+    parser.add_argument('-e', '--extra-crash-signals', '--extra_crash_signals',
+                        help="Use extra crash signals SIGABRT and SIGBUS", action='store_true', default=False)
     args = parser.parse_args()
 
     if os.path.isfile(os.path.join(os.getcwd(), args.logcfg)):
@@ -112,7 +115,8 @@ def main():
                               memory=args.memory, run_timeout=args.run_timeout, dictionary=built_dict, use_qemu=args.use_qemu,
                               resume=args.resume, target_opts=args.target_opts
                               )
-
+    if args.extra_crash_signals:
+        fuzzer.crashes(signals=(signal.SIGSEGV, signal.SIGILL, signal.SIGABRT, signal.SIGBUS  ))
     # start it!
     print ("[*] Starting fuzzer...")
     fuzzer.start()
