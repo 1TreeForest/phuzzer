@@ -429,9 +429,18 @@ class AFL(Phuzzer):
 
         logpath = os.path.join(self.work_dir, fuzzer_id + ".log")
         l.debug("execing: %s > %s", ' '.join(args), logpath)
-
+        scr_fn = f"/tmp/fuzz-{instance_cnt}.sh"
+        with open(scr_fn, "w") as scr:
+            scr.write("#! /bin/bash \n")
+            for key,val in my_env.items():
+                scr.write(f'export {key}="{val}"\n')
+            scr.write(" ".join(args) + "\n")
+        l.info(f"Fuzz command written out to {scr_fn}")
+        os.chmod(scr_fn, mode=0o774)
         with open(logpath, "w") as fp:
-            return subprocess.Popen(args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
+            return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+        # with open(logpath, "w") as fp:
+        #     return subprocess.Popen(args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
 
     def log_command(self, args, fuzzer_id, my_env):
         with open(os.path.join(self.work_dir, fuzzer_id + ".cmd"), "w") as cf:

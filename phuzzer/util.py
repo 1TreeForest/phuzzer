@@ -5,7 +5,10 @@ def hexescape(s):
     '''
     perform hex escaping on a raw string s
     '''
-
+    try:
+        s = s.encode()
+    except AttributeError:
+        pass
     out = []
     acceptable = (string.ascii_letters + string.digits + " .").encode()
     for c in s:

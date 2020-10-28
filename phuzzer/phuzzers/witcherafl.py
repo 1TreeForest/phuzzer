@@ -25,7 +25,8 @@ class WitcherAFL(AFL):
         afl_count=1, memory="8G", timeout=None,
         target_opts=None, extra_opts=None,
         crash_mode=False, use_qemu=True,
-        run_timeout=None, login_json_fn=""
+        run_timeout=None, login_json_fn="",
+        server_cmd=None, server_env_vars=None
     ):
         """
         :param target: path to the script to fuzz (from AFL)
@@ -66,6 +67,10 @@ class WitcherAFL(AFL):
         self.session_name = ""
         self.bearer = ""
 
+        self.server_cmd = server_cmd
+        self.server_env_vars = server_env_vars
+        self.server_procs = []
+
         if "AFL_PATH" in os.environ:
             afl_fuzz_bin = os.path.join(os.environ['AFL_PATH'], "afl-fuzz")
             if os.path.exists(afl_fuzz_bin):
@@ -74,16 +79,24 @@ class WitcherAFL(AFL):
                 raise ValueError(
                     f"error, have AFL_PATH but cannot find afl-fuzz at {os.environ['AFL_PATH']} with {afl_fuzz_bin}")
 
+
+
     def _start_afl_instance(self, instance_cnt=0):
 
         args, fuzzer_id = self.build_args()
 
         my_env = os.environ.copy()
 
-        target_opts = []
-        for op in self.target_opts:
-            target_opts.append(op.replace("~~", "--").replace("@PORT@", my_env["PORT"]))
-        args += target_opts
+        final_args = []
+        for op in args:
+            target_var = op.replace("~~", "--").replace("@@PORT@@", my_env.get("PORT", "80"))
+            increasing_port = int(my_env.get("PORT", 14000)) + instance_cnt
+            if "@@PORT_INCREMENT@@" in target_var:
+                target_var = target_var.replace("@@PORT_INCREMENT@@", str(increasing_port))
+                my_env["PORT"] = str(increasing_port)
+            final_args.append(target_var)
+
+        print(f"TARGET OPTS::::: {final_args}")
 
         self._get_login(my_env)
 
@@ -95,10 +108,11 @@ class WitcherAFL(AFL):
 
         # print(f"[WC] my word dir {self.work_dir} AFL_BASE={my_env['AFL_BASE']}")
 
-        self.log_command(args, fuzzer_id, my_env)
+        self.log_command(final_args, fuzzer_id, my_env)
 
         logpath = os.path.join(self.work_dir, fuzzer_id + ".log")
-        l.debug("execing: %s > %s", ' '.join(args), logpath)
+
+        l.debug("execing: %s > %s", ' '.join(final_args), logpath)
 
         # set core affinity if environment variable is set
         if "AFL_SET_AFFINITY" in my_env:
@@ -106,8 +120,22 @@ class WitcherAFL(AFL):
             tempint += instance_cnt
             my_env["AFL_SET_AFFINITY"] = str(tempint)
 
+        scr_fn = f"/tmp/fuzz-{instance_cnt}.sh"
+        with open(scr_fn, "w") as scr:
+            scr.write("#! /bin/bash \n")
+            for key, val in my_env.items():
+                scr.write(f'export {key}="{val}"\n')
+            scr.write(" ".join(final_args) + "\n")
+            #scr.write(f"{final_args[0].replace('afl-fuzz','afl-showmap')} -o /tmp/outmap ")
+
+
+        l.info(f"Fuzz command written out to {scr_fn}")
+        os.chmod(scr_fn, mode=0o774)
         with open(logpath, "w") as fp:
-            return subprocess.Popen(args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
+            return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+
+        # with open(logpath, "w") as fp:
+        #     return subprocess.Popen(final_args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
 
     def _check_for_authorized_response(self, body, headers, loginconfig):
         return WitcherAFL._check_body(body, loginconfig) and WitcherAFL._check_headers(headers, loginconfig)

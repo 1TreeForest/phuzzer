@@ -1,6 +1,7 @@
 import os
 import time
 import glob
+import math
 import datetime
 import traceback
 from threading import Thread
@@ -62,6 +63,8 @@ class Reporter(Thread):
             for fstat, value in fuzzstats.items():
                 try:
                     fvalue = float(value)
+                    if math.isinf(fvalue):
+                        fvalue = 0
                     if fstat in ('paths_total', 'unique_crashes'):
                         summary_stats[fstat] = max(summary_stats[fstat], int(fvalue))
                     else:
