@@ -118,6 +118,7 @@ class Phuzzer:
     __enter__ = start
 
     def stop(self):
+        print("[*] Stopping phuzzer at top level")
         self.end_time = int(time.time())
         if self.start_time is not None:
             l.info("Phuzzer %s shut down after %d seconds.", self, self.end_time - self.start_time)

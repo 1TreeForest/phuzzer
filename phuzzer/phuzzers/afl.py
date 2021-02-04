@@ -8,11 +8,12 @@ import contextlib
 import logging
 import signal
 import shutil
+import archr
 import os
 
 
 l = logging.getLogger("phuzzer.phuzzers.afl")
-l.setLevel(logging.INFO)
+l.setLevel(logging.DEBUG)
 
 
 class AFL(Phuzzer):
@@ -24,7 +25,7 @@ class AFL(Phuzzer):
         afl_count=1, memory="8G", timeout=None,
         library_path=None, target_opts=None, extra_opts=None,
         crash_mode=False, use_qemu=True,
-        run_timeout=None
+        run_timeout=None, container_info=None
     ):
         """
         :param target: path to the binary to fuzz. List or tuple for multi-CB.
@@ -47,11 +48,16 @@ class AFL(Phuzzer):
         :param use_qemu: Utilize QEMU for instrumentation of binary.
 
         :param run_timeout: amount of time for AFL to wait for a single execution to finish
+        :param container_info: provided when phuzzer should launch AFL from within a docker container {name:"", image_files:[], env:{})
 
         """
         super().__init__(target=target, seeds=seeds, dictionary=dictionary, create_dictionary=create_dictionary, timeout=timeout)
+        self.log = logging.getLogger("phuzzer.phuzzers.afl")
+        self.log.setLevel(logging.DEBUG)
 
         self.work_dir = work_dir or os.path.join("/tmp", "phuzzer", os.path.basename(str(target)))
+        print(f"Working Directory {self.work_dir}")
+        print(f"Working Directory {self.work_dir}")
         if resume and os.path.isdir(self.work_dir):
             self.in_dir = "-"
         else:
@@ -82,7 +88,10 @@ class AFL(Phuzzer):
 
         # set up the paths
         self.afl_phuzzer_bin_path = self.choose_afl()
+        print(f"AFL bin path = {self.afl_phuzzer_bin_path}")
 
+        self.container_info = container_info
+        self.container_targets = []
     #
     # Overrides
     #
@@ -156,12 +165,22 @@ class AFL(Phuzzer):
             return False
 
         alive_cnt = 0
-        for fuzzer in self.stats:
-            try:
-                os.kill(int(self.stats[fuzzer]['fuzzer_pid']), 0)
-                alive_cnt += 1
-            except (OSError, KeyError):
-                pass
+        if self.container_info:
+            for target in self.container_targets:
+                try:
+                    p = target.run_command(["pkill","-0","afl-fuzz"])
+                    p.wait()
+                    if p.returncode == 0:
+                        alive_cnt += 1
+                except Exception as ex:
+                    print(ex)
+        else:
+            for fuzzer in self.stats:
+                try:
+                    os.kill(int(self.stats[fuzzer]['fuzzer_pid']), 0)
+                    alive_cnt += 1
+                except (OSError, KeyError):
+                    pass
 
         return bool(alive_cnt)
 
@@ -327,6 +346,7 @@ class AFL(Phuzzer):
 
         f.kill()
 
+
     def crashes(self, signals=(signal.SIGSEGV, signal.SIGILL)):
         """
         Retrieve the crashes discovered by AFL. Since we are now detecting flag
@@ -419,6 +439,37 @@ class AFL(Phuzzer):
 
         return args, fuzzer_id
 
+    def _configure_container(self, target):
+        for config_cmd in self.container_info.get("config_cmds",[]):
+            target.run_command(config_cmd).wait()
+
+
+    def _start_container(self, scr_fn, log_fpath, fuzzer_id):
+        t: archr.targets.DockerImageTarget = archr.targets.DockerImageTarget(
+            image_name=self.container_info["name"],
+        )
+
+        t.volumes["/p"] = {'bind': "/p", 'mode': 'rw'}
+        t.volumes[self.work_dir] = {'bind': self.work_dir, 'mode': 'rw'}
+        t.volumes["/Crucible"] = {'bind': "/Crucible_ro", 'mode': 'ro'}
+
+        print(f"mounted workdir {self.work_dir}")
+        t.build()
+
+        t.start(
+            labels=[f"witcher-iot-{fuzzer_id}"],
+        )
+        self._configure_container(t)
+
+        self.container_targets.append(t)
+
+        # run fuzzer
+        proc = t.run_command([scr_fn], stdout=log_fpath, stderr=log_fpath)
+
+        return proc
+
+
+
     def _start_afl_instance(self, instance_cnt=0):
 
         args, fuzzer_id = self.build_args()
@@ -428,19 +479,29 @@ class AFL(Phuzzer):
         self.log_command(args, fuzzer_id, my_env)
 
         logpath = os.path.join(self.work_dir, fuzzer_id + ".log")
-        l.debug("execing: %s > %s", ' '.join(args), logpath)
-        scr_fn = f"/tmp/fuzz-{instance_cnt}.sh"
+        print(f"execing:  {' '.join(args)}, {logpath}")
+        l.warning("execing: %s > %s", ' '.join(args), logpath)
+
+        if self.container_info:
+            my_env.update(self.container_info.get("env",{}))
+            my_env["AFL_SET_AFFINITY"] = str(instance_cnt)
+
+        # write out fuzzer environment values and cmd to script
+        scr_fn = os.path.join(self.work_dir, f"fuzz-{instance_cnt}.sh")
         with open(scr_fn, "w") as scr:
             scr.write("#! /bin/bash \n")
             for key,val in my_env.items():
                 scr.write(f'export {key}="{val}"\n')
             scr.write(" ".join(args) + "\n")
-        l.info(f"Fuzz command written out to {scr_fn}")
+        print(f"Fuzz command written out to {scr_fn}")
+
         os.chmod(scr_fn, mode=0o774)
         with open(logpath, "w") as fp:
-            return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
-        # with open(logpath, "w") as fp:
-        #     return subprocess.Popen(args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
+            if self.container_info:
+                return self._start_container(scr_fn, fp, fuzzer_id)
+            else:
+                return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+
 
     def log_command(self, args, fuzzer_id, my_env):
         with open(os.path.join(self.work_dir, fuzzer_id + ".cmd"), "w") as cf:
@@ -493,3 +554,20 @@ class AFL(Phuzzer):
         print(f"afl_bin={afl_bin}")
         return afl_bin
 
+    def stop(self):
+        print(f"[afl] STOPPING each fuzzer process {len(self.container_targets)}")
+        for x in range(0, len(self.container_targets)):
+            try:
+                print(f"Stopping container {x}")
+                if len(self.container_targets) == 0:
+                    break
+                t = self.container_targets.pop()
+                print(f"got container {x}")
+                t.stop()
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+
+        super().stop()
+
+    __exit__ = stop

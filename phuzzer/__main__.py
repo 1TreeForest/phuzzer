@@ -113,8 +113,15 @@ def main():
                               target=args.binary, work_dir=args.work_dir, seeds=seeds, afl_count=args.afl_cores,
                               create_dictionary=not args.no_dictionary, timeout=args.timeout,
                               memory=args.memory, run_timeout=args.run_timeout, dictionary=built_dict, use_qemu=args.use_qemu,
-                              resume=args.resume, target_opts=args.target_opts
-                              )
+                              resume=args.resume, target_opts=args.target_opts,
+                              container_info={"name": "hacrs/witcher",
+                                              "iid":"35",
+                                              "config_cmds": [["mkdir", "-p", f"/Crucible/scratch/35"],
+                                                              ["ln", "-s", "/Crucible_ro/firmae.config", "/Crucible"],
+                                                              ["ln", "-s", "/Crucible_ro/get_bin_data.py", "/Crucible"],
+                                                              ["ln", "-s", "/Crucible_ro/binaries", "/Crucible"],
+                                                              ["cp", "-a", f"/Crucible_ro/scratch/35", "/Crucible/scratch/"]],
+                                              "env": {"HTTPREQR_LAUNCH_SCRIPT": "/Crucible/scratch/35/run.sh"}})
     if args.extra_crash_signals:
         fuzzer.crashes(signals=(signal.SIGSEGV, signal.SIGILL, signal.SIGABRT, signal.SIGBUS  ))
     # start it!
