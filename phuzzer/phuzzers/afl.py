@@ -451,7 +451,9 @@ class AFL(Phuzzer):
 
         t.volumes["/p"] = {'bind': "/p", 'mode': 'rw'}
         t.volumes[self.work_dir] = {'bind': self.work_dir, 'mode': 'rw'}
-        t.volumes["/Crucible"] = {'bind': "/Crucible_ro", 'mode': 'ro'}
+        host_crucible_vol = os.environ.get("CRUCIBLE_VOL","/tmp/Crucible")
+        t.add_volume(host_crucible_vol, "/Crucible_ro", "ro")
+
 
         print(f"mounted workdir {self.work_dir}")
         t.build()
