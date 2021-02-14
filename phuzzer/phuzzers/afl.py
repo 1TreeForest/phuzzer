@@ -401,7 +401,7 @@ class AFL(Phuzzer):
     #
     # AFL launchers
     #
-    def build_args(self):
+    def build_args(self, instance_cnt=None):
         args = [self.afl_phuzzer_bin_path]
 
         args += ["-i", self.in_dir]
@@ -426,6 +426,9 @@ class AFL(Phuzzer):
 
         args += self.extra_opts
 
+        if self.container_info:
+            args += ["-b", str(instance_cnt)]
+
         if self.run_timeout is not None:
             args += ["-t", "%d+" % self.run_timeout]
         args += ["--"]
@@ -444,11 +447,11 @@ class AFL(Phuzzer):
             target.run_command(config_cmd).wait()
 
 
-    def _start_container(self, scr_fn, log_fpath, fuzzer_id):
+    def _start_container(self, scr_fn, log_fpath, fuzzer_id, instance_cnt):
+
         t: archr.targets.DockerImageTarget = archr.targets.DockerImageTarget(
             image_name=self.container_info["name"],
         )
-
         t.volumes["/p"] = {'bind': "/p", 'mode': 'rw'}
         t.volumes[self.work_dir] = {'bind': self.work_dir, 'mode': 'rw'}
         host_crucible_vol = os.environ.get("CRUCIBLE_VOL","/tmp/Crucible")
@@ -459,7 +462,7 @@ class AFL(Phuzzer):
         t.build()
 
         t.start(
-            labels=[f"witcher-iot-{fuzzer_id}"],
+            labels=[f"witcher-iot-{fuzzer_id}"]
         )
         self._configure_container(t)
 
@@ -474,7 +477,7 @@ class AFL(Phuzzer):
 
     def _start_afl_instance(self, instance_cnt=0):
 
-        args, fuzzer_id = self.build_args()
+        args, fuzzer_id = self.build_args(instance_cnt)
 
         my_env = os.environ.copy()
 
@@ -486,7 +489,7 @@ class AFL(Phuzzer):
 
         if self.container_info:
             my_env.update(self.container_info.get("env",{}))
-            my_env["AFL_SET_AFFINITY"] = str(instance_cnt)
+            #my_env["AFL_SET_AFFINITY"] = str(instance_cnt)
 
         # write out fuzzer environment values and cmd to script
         scr_fn = os.path.join(self.work_dir, f"fuzz-{instance_cnt}.sh")
@@ -500,7 +503,7 @@ class AFL(Phuzzer):
         os.chmod(scr_fn, mode=0o774)
         with open(logpath, "w") as fp:
             if self.container_info:
-                return self._start_container(scr_fn, fp, fuzzer_id)
+                return self._start_container(scr_fn, fp, fuzzer_id,instance_cnt )
             else:
                 return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
 
