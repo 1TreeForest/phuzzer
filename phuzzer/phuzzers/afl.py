@@ -470,6 +470,7 @@ class AFL(Phuzzer):
         self.container_targets.append(t)
 
         # run fuzzer
+        print(f"sending out an execute to my friend {scr_fn} and logging to {log_fpath}")
         proc = t.run_command([scr_fn], stdout=log_fpath, stderr=log_fpath)
 
         return proc
@@ -490,7 +491,7 @@ class AFL(Phuzzer):
 
         if self.container_info:
             my_env.update(self.container_info.get("env",{}))
-            #my_env["AFL_SET_AFFINITY"] = str(instance_cnt)
+            my_env["AFL_SET_AFFINITY"] = str(instance_cnt)
 
         # write out fuzzer environment values and cmd to script
         scr_fn = os.path.join(self.work_dir, f"fuzz-{instance_cnt}.sh")
