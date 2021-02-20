@@ -8,6 +8,7 @@ import contextlib
 import logging
 import signal
 import shutil
+import shlex
 import archr
 import os
 
@@ -436,7 +437,7 @@ class AFL(Phuzzer):
         target_opts = []
 
         for op in self.target_opts:
-            target_opts.append(op.replace("~~", "--").replace("~","-"))
+            target_opts.append(shlex.quote(op.replace("~~", "--").replace("~","-")))
 
         args += target_opts
 
