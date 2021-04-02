@@ -10,8 +10,9 @@ import signal
 import shutil
 import shlex
 import archr
+import glob
 import os
-
+import re
 
 l = logging.getLogger("phuzzer.phuzzers.afl")
 l.setLevel(logging.DEBUG)
@@ -57,7 +58,6 @@ class AFL(Phuzzer):
         self.log.setLevel(logging.DEBUG)
 
         self.work_dir = work_dir or os.path.join("/tmp", "phuzzer", os.path.basename(str(target)))
-        print(f"Working Directory {self.work_dir}")
         print(f"Working Directory {self.work_dir}")
         if resume and os.path.isdir(self.work_dir):
             self.in_dir = "-"
@@ -508,6 +508,25 @@ class AFL(Phuzzer):
                 return self._start_container(scr_fn, fp, fuzzer_id,instance_cnt )
             else:
                 return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+
+    def startup_status(self):
+        totallogs = 0
+        success = 0
+        testfailed = 0
+        failedseeds = set()
+        testregex = r"Test case 'id.*,orig:(.*)' results in a crash"
+        for lpath in glob.iglob(os.path.join(self.work_dir,"fuzzer-*.log")):
+            with open(lpath,"r") as rf:
+                data = rf.read()
+                if data.find("All set and ready to roll") > -1:
+                    success += 1
+                if len(data) > 1000:
+                    totallogs += 1
+                match = re.search(testregex, data)
+                if match:
+                    failedseeds.add(match.group(1))
+                    testfailed +=1
+        return {"successcnt":success, "totalcnt":totallogs, "testfailed":testfailed, "failedseeds": failedseeds}
 
 
     def log_command(self, args, fuzzer_id, my_env):

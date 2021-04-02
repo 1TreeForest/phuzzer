@@ -12,6 +12,7 @@ import stat
 import glob
 import logging
 import urllib.request
+#import ipdb
 
 l = logging.getLogger("phuzzer.phuzzers.wafl")
 l.setLevel(logging.INFO)
@@ -26,7 +27,8 @@ class WitcherAFL(AFL):
         target_opts=None, extra_opts=None,
         crash_mode=False, use_qemu=True,
         run_timeout=None, login_json_fn="",
-        server_cmd=None, server_env_vars=None
+        server_cmd=None, server_env_vars=None,
+        base_port=None
     ):
         """
         :param target: path to the script to fuzz (from AFL)
@@ -70,6 +72,7 @@ class WitcherAFL(AFL):
         self.server_cmd = server_cmd
         self.server_env_vars = server_env_vars
         self.server_procs = []
+        self.base_port = base_port if base_port is not None else os.environ.get("PORT",14000)
 
         if "AFL_PATH" in os.environ:
             afl_fuzz_bin = os.path.join(os.environ['AFL_PATH'], "afl-fuzz")
@@ -81,6 +84,7 @@ class WitcherAFL(AFL):
 
 
 
+
     def _start_afl_instance(self, instance_cnt=0):
 
         args, fuzzer_id = self.build_args()
@@ -89,11 +93,12 @@ class WitcherAFL(AFL):
 
         final_args = []
         for op in args:
-            target_var = op.replace("~~", "--").replace("@@PORT@@", my_env.get("PORT", "80"))
-            increasing_port = int(my_env.get("PORT", 14000)) + instance_cnt
+            target_var = op.replace("~~", "--").replace("@@PORT@@", str(self.base_port))
+            increasing_port = self.base_port + instance_cnt
             if "@@PORT_INCREMENT@@" in target_var:
                 target_var = target_var.replace("@@PORT_INCREMENT@@", str(increasing_port))
                 my_env["PORT"] = str(increasing_port)
+                my_env["AFL_META_INFO_ID"] = str(increasing_port)
             final_args.append(target_var)
 
         print(f"TARGET OPTS::::: {final_args}")
@@ -101,7 +106,8 @@ class WitcherAFL(AFL):
         self._get_login(my_env)
 
         my_env["AFL_BASE"] = os.path.join(self.work_dir, fuzzer_id)
-        my_env["STRICT"] = "true"
+        my_env["STRICT"] = "3"
+        my_env["SCRIPT_NAME"] = my_env.get("SCRIPT_FILENAME","")
 
         if "METHOD" not in my_env:
             my_env["METHOD"] = "POST"
@@ -141,42 +147,52 @@ class WitcherAFL(AFL):
         return WitcherAFL._check_body(body, loginconfig) and WitcherAFL._check_headers(headers, loginconfig)
 
     @staticmethod
-    def _check_body(self, body, loginconfig):
+    def _check_body(body, loginconfig):
         if "positiveBody" in loginconfig and len(loginconfig["positiveBody"]) > 1:
             pattern = re.compile(loginconfig["positiveBody"])
-            return pattern.search(body) is None
+            res = pattern.search(body)
+            test = res is not None
+            return test
         return True
 
     @staticmethod
-    def _check_headers(self, headers, loginconfig):
-        if "postiveHeaders" in loginconfig:
-            posHeaders = loginconfig["positiveHeaders"]
-            for ph in posHeaders:
-                for posname, posvalue in ph:
-                    found = False
-                    for headername, headervalue in headers:
-                        if posname == headername and posvalue == headervalue:
-                            found = True
-                    if not found:
-                        return False
+    def _check_headers(headers, loginconfig):
+        if "positiveHeaders" in loginconfig:
+            posHeaders = loginconfig.get("positiveHeaders",[])
+            for posname, posvalue in posHeaders.items():
+                found = False
+                for headername, headervalue in headers:
+                    if posname == headername and posvalue in headervalue:
+                        found = True
+                        break
+                if not found:
+                    return False
         return True
 
-    def _save_session(self, session_cookie, loginconfig):
-        session_cookie_locations = ["/tmp","/var/lib/php/sessions"]
+    def _contains_session_cookie(self, session_cookie, loginconfig):
+
         if "loginSessionCookie" in loginconfig:
             session_name = loginconfig["loginSessionCookie"]
         else:
             session_name = r".*"
+
+
+        sessidrex = re.compile(rf"{session_name}=(?P<sessid>[a-z0-9_\-A-Z]{{24,40}})")
+
+        print(f"COOKIE seen is ")
+        session_match = sessidrex.match(session_cookie)
+        if not session_match:
+            return None
+
+        sessid = session_match.group("sessid")
+        return sessid
+
+    def _save_session_data(self, loginconfig, sessid):
+        session_cookie_locations = ["/tmp", "/var/lib/php/sessions"]
         if "cookieLocations" in loginconfig:
             for cl in loginconfig["cookeLocations"]:
                 session_cookie_locations.append(cl)
 
-        sessidrex = re.compile(rf"{session_name}=(?P<sessid>[a-z0-9]{{24,40}})")
-        sessid = sessidrex.match(session_cookie).group("sessid")
-        if not sessid:
-            return False
-
-        # print("[WC] sessidrex " + sessid)
         actual_sess_fn = ""
         for f in session_cookie_locations:
 
@@ -190,7 +206,7 @@ class WitcherAFL(AFL):
                 break
 
         if len(actual_sess_fn) == 0:
-            return False
+            return True
 
         saved_sess_fn = f"/tmp/save_{sessid}"
         if os.path.isfile(actual_sess_fn):
@@ -198,7 +214,7 @@ class WitcherAFL(AFL):
             os.chmod(saved_sess_fn, stat.S_IRWXO | stat.S_IRWXG | stat.S_IRWXU)
             self.used_sessions.add(saved_sess_fn)
             return True
-        return False
+        return True
 
     def _extract_authdata(self, headers, loginconfig):
         authdata = []
@@ -207,8 +223,10 @@ class WitcherAFL(AFL):
                 # Uses special authdata header so that the value prepends all other cookie values and
                 # random data from AFL does not interfere
 
-                if self._save_session(headervalue, loginconfig):
+                sessid = self._contains_session_cookie(headervalue, loginconfig)
+                if sessid:
                     authdata.append(("LOGIN_COOKIE", headervalue))
+                    self._save_session_data(headervalue, loginconfig)
 
 
             if headername.upper() == "AUTHORIZATION":
@@ -227,8 +245,9 @@ class WitcherAFL(AFL):
             del myenv["AFL_BASE"]
 
         myenv["METHOD"] = loginconfig["method"]
-        myenv["STRICT"] = "1"
+        myenv["STRICT"] = "3"
         myenv["SCRIPT_FILENAME"] = loginconfig["url"]
+        myenv["SCRIPT_NAME"] = loginconfig["url"]
 
         if "afl_preload" in loginconfig:
             myenv["LD_PRELOAD"] = loginconfig["afl_preload"]
@@ -247,75 +266,95 @@ class WitcherAFL(AFL):
 
         p = subprocess.Popen(login_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, stdin=login_req_file,
                              env=myenv)
+        strout, stderr = p.communicate()
+        if stderr:
+            print(stderr)
 
-        nbsr = NonBlockingStreamReader(p.stdout)
-        strout = ""
+        strout = strout.decode('latin-1')
+        # nbsr = NonBlockingStreamReader(p.stdout)
+        # strout = ""
+        #
+        # while not nbsr.is_finished:
+        #
+        #     line = nbsr.readline(0.1)
+        #     if line is not None:
+        #         inp = line.decode('latin-1')
+        #         strout += inp
+        #         # print("\033[32m", end="")
+        #         # print(inp, end="")
+        #         # print("\033[0m", end="")
 
-        while not nbsr.is_finished:
-
-            line = nbsr.readline(0.1)
-            if line is not None:
-                inp = line.decode('latin-1')
-                strout += inp
-                # print("\033[32m", end="")
-                # print(inp, end="")
-                # print("\033[0m", end="")
-
-        p.wait()
 
         headers = []
         body = ""
         inbody = False
+        start = False
         for respline in strout.splitlines():
-            if len(respline) == 0:
+            if "END webcam_trace_init" in respline:
+                start = True
+                continue
+            if len(respline) == 0 and start:
                 inbody = True
                 continue
             if inbody:
                 body += respline + "\n"
             else:
                 header = respline.split(":")
-                if len(header) > 1 and inbody:
+                if len(header) > 1:
                     headername = header[0].strip()
                     headerval = ":".join(header[1:])
                     headerval = headerval.lstrip()
                     headers.append((headername, headerval))
 
         if not self._check_for_authorized_response(body, headers, loginconfig):
-            return []
+            print("\033[31mFailed to get authorization\033[0m")
+            exit(33)
+            #raise Exception("Failed to get authorization")
+            #return []
 
         return self._extract_authdata(headers, loginconfig)
 
     def _do_http_req_login(self, loginconfig):
 
         url = loginconfig["url"]
-
-        if "getData" in loginconfig:
+        url = url.replace("@@PORT_INCREMENT@@", str(18080))
+        if "getData" in loginconfig and loginconfig['getData']:
             url += f"?{loginconfig['getData']}"
 
         post_data = loginconfig["postData"] if "postData" in loginconfig else ""
         post_data = post_data.encode('ascii')
 
         req_headers = loginconfig["headers"] if "headers" in loginconfig else {}
+        method = loginconfig.get("method","GET")
         opener = urllib.request.build_opener(NoRedirection)
         urllib.request.install_opener(opener)
 
-        req = urllib.request.Request(url, post_data, req_headers)
+        req = urllib.request.Request(url, post_data, req_headers, method=method)
+        print(f"request = {req}")
         response = urllib.request.urlopen(req)
-
+        print(f"response={response}")
+        print(response.getheaders())
         headers = response.getheaders()
         body = response.read()
 
+        #ipdb.set_trace()
+
         if not self._check_for_authorized_response(body, headers, loginconfig):
-            return []
+            print("failed to get authorization")
+            exit(33)
+
 
         return self._extract_authdata(headers, loginconfig)
 
     @staticmethod
-    def _do_authorized_requests(self, loginconfig, authdata):
+    def _do_authorized_requests(loginconfig, authdata):
         extra_requests = loginconfig["extra_authorized_requests"] if "postData" in loginconfig else []
 
         for auth_request in extra_requests:
+
             url = auth_request["url"]
+            if not url:
+                continue
 
             if "getData" in auth_request:
                 url += f"?{auth_request['getData']}"
@@ -353,7 +392,9 @@ class WitcherAFL(AFL):
         authdata = None
         for _ in range(0, 10):
             if loginconfig["url"].startswith("http"):
+
                 authdata = self._do_http_req_login(loginconfig)
+                print(f"[*] Authorized data = {authdata}")
                 WitcherAFL._do_authorized_requests(loginconfig, authdata)
             else:
                 authdata = self._do_local_cgi_req_login(loginconfig)

@@ -106,6 +106,7 @@ class Phuzzer:
         for _ in range(n):
             self.remove_core()
 
+
     def timed_out(self):
         if self.timeout is None:
             return False
@@ -278,6 +279,7 @@ class Phuzzer:
     # Subclasses should override this.
     #
 
+
     @staticmethod
     def _check_environment():
         raise NotImplementedError()
@@ -316,5 +318,8 @@ class Phuzzer:
 
     def __del__(self):
         self.stop()
+
+    def startup_status(self):
+        raise NotImplementedError
 
 from ..errors import InstallError
