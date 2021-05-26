@@ -11,7 +11,7 @@ from collections import defaultdict
 class Reporter(Thread):
     DETAIL_FREQ = 1
 
-    def __init__(self, binary, reportdir, afl_cores, first_crash, timeout,  work_dir, testversion=""):
+    def __init__(self, binary, reportdir, afl_cores, first_crash, timeout,  work_dir, testversion="", chown_files=None):
         Thread.__init__(self)
         self.binary = binary
         self.reportdir = reportdir
@@ -44,11 +44,13 @@ class Reporter(Thread):
         self.elapsed_time = 0
         self.testversion = testversion
         self.script_filename = ""
+        self.chown_files = chown_files
 
     def set_script_filename(self, script_fn):
         self.script_filename = script_fn
 
     def run(self):
+        time.sleep(10)
         while self.keepgoing:
             self.generate_report_line()
             time.sleep(1)
@@ -81,7 +83,7 @@ class Reporter(Thread):
                 if os.path.isdir(os.path.join(self.work_dir, fuzzer_dir)):
                     stat_path = os.path.join(self.work_dir, fuzzer_dir, "fuzzer_stats")
                     self.stats[fuzzer_dir] = {}
-                    if os.path.isfile(stat_path):
+                    if os.path.isfile(stat_path) and os.access(stat_path, os.R_OK):
                         with open(stat_path, "r") as f:
                             stat_blob = f.read()
                             stat_lines = stat_blob.split("\n")[:-1]
@@ -141,6 +143,12 @@ class Reporter(Thread):
         self.last_printed_paths_total = self.summary_stats["paths_total"]
 
     def generate_report_line(self, mandatory_record=False):
+        if not os.access(os.path.join(self.work_dir,"fuzzer-master","fuzzer_stats"), os.R_OK):
+            if self.chown_files is None:
+                pass
+            else:
+                self.chown_files()
+
         self.elapsed_time = time.time() - self.start_time
 
         self.get_fuzzer_stats()

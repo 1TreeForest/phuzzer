@@ -9,8 +9,10 @@ import logging
 import signal
 import shutil
 import shlex
+import time
 import archr
 import glob
+import pwd
 import os
 import re
 
@@ -59,15 +61,17 @@ class AFL(Phuzzer):
 
         self.work_dir = work_dir or os.path.join("/tmp", "phuzzer", os.path.basename(str(target)))
         print(f"Working Directory {self.work_dir}")
+
         if resume and os.path.isdir(self.work_dir):
             self.in_dir = "-"
         else:
             l.info("could resume, but starting over upon request")
+            os.system(f"sudo chown {pwd.getpwuid( os.getuid() ).pw_uid}:{pwd.getpwuid( os.getuid() ).pw_uid} -R .")
             with contextlib.suppress(FileNotFoundError):
                 shutil.rmtree(self.work_dir)
             self.in_dir = seeds_dir or os.path.join(self.work_dir, "initial_seeds")
             with contextlib.suppress(FileExistsError):
-                os.makedirs(self.in_dir)
+                os.makedirs(self.in_dir, 0o777)
 
         self.afl_count      = afl_count
         self.memory         = memory
@@ -130,7 +134,7 @@ class AFL(Phuzzer):
 
         # create the directory
         with contextlib.suppress(FileExistsError):
-            os.makedirs(self.work_dir)
+            os.makedirs(self.work_dir, 0o777)
 
         # write the dictionary
         if self.dictionary:
@@ -203,7 +207,7 @@ class AFL(Phuzzer):
 
     @property
     def stats(self):
-
+        self.chown_container_files()
         # collect stats into dictionary
         stats = {}
         if os.path.isdir(self.work_dir):
@@ -244,7 +248,7 @@ class AFL(Phuzzer):
         :param signals: list of valid kill signal numbers
         :return: a list of strings which are crashing inputs
         """
-
+        self.chown_container_files(wait=True)
         crashes = set()
         for fuzzer in os.listdir(self.work_dir):
             crashes_dir = os.path.join(self.work_dir, fuzzer, "crashes")
@@ -264,6 +268,9 @@ class AFL(Phuzzer):
                     continue
 
                 crash_path = os.path.join(crashes_dir, crash)
+                if not os.access(os.path.join(crash_path), os.R_OK):
+                    self.chown_container_files(wait=True)
+
                 with open(crash_path, 'rb') as f:
                     crashes.add(f.read())
 
@@ -422,13 +429,14 @@ class AFL(Phuzzer):
             fuzzer_id = "fuzzer-%d" % len(self.processes)
             args += ["-S", fuzzer_id]
 
+
         if os.path.exists(self.dictionary_file):
             args += ["-x", self.dictionary_file]
 
         args += self.extra_opts
 
-        if self.container_info:
-            args += ["-b", str(instance_cnt)]
+        # if self.container_info:
+        #     args += ["-b", str(instance_cnt)]
 
         if self.run_timeout is not None:
             args += ["-t", "%d+" % self.run_timeout]
@@ -513,6 +521,7 @@ class AFL(Phuzzer):
         totallogs = 0
         success = 0
         testfailed = 0
+        forkfailcnt = 0
         failedseeds = set()
         testregex = r"Test case 'id.*,orig:(.*)' results in a crash"
         for lpath in glob.iglob(os.path.join(self.work_dir,"fuzzer-*.log")):
@@ -526,7 +535,9 @@ class AFL(Phuzzer):
                 if match:
                     failedseeds.add(match.group(1))
                     testfailed +=1
-        return {"successcnt":success, "totalcnt":totallogs, "testfailed":testfailed, "failedseeds": failedseeds}
+                if data.find("Fork server handshake failed") > -1:
+                    forkfailcnt+=1
+        return {"successcnt":success, "totalcnt":totallogs, "testfailed":testfailed, "failedseeds": failedseeds, "forkfail": forkfailcnt}
 
 
     def log_command(self, args, fuzzer_id, my_env):
@@ -581,6 +592,9 @@ class AFL(Phuzzer):
         return afl_bin
 
     def stop(self):
+        super().stop()
+        time.sleep(3)
+        self.chown_container_files()
         print(f"[afl] STOPPING each fuzzer process {len(self.container_targets)}")
         for x in range(0, len(self.container_targets)):
             try:
@@ -594,6 +608,28 @@ class AFL(Phuzzer):
                 import traceback
                 traceback.print_exc()
 
-        super().stop()
+
+
+    def chown_container_files(self, owner_id=None, file=None, wait=False):
+        if self.container_info:
+            for ct in self.container_targets:
+                if owner_id is None:
+                    owner_id = pwd.getpwuid( os.getuid() ).pw_uid
+                if file:
+                    cmd = ["chown", f"{owner_id}:{owner_id}", file]
+                    cmd2 = ["chmod", "+r", file]
+                else:
+                    cmd = ["chown", f"{owner_id}:{owner_id}", "-R", self.work_dir]
+                    cmd2 = ["chmod", "+r", "-R", self.work_dir]
+
+                try:
+                    p = ct.run_command(cmd)
+                    p = ct.run_command(cmd2)
+                    if wait:
+                        p.wait()
+
+                except Exception as ex:
+                    print(f"\033[31m{ex}\033[0m")
+                    pass
 
     __exit__ = stop
