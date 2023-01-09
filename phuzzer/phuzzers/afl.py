@@ -522,11 +522,20 @@ class AFL(Phuzzer):
         success = 0
         testfailed = 0
         forkfailcnt = 0
+        logfilesize = 0
         failedseeds = set()
+        weakseeds = set()
         testregex = r"Test case 'id.*,orig:(.*)' results in a crash"
+        warningfile_regex = r"Attempting dry run with 'id:[0-9]{6},orig:(.*)'\.\.\."
         for lpath in glob.iglob(os.path.join(self.work_dir,"fuzzer-*.log")):
             with open(lpath,"r") as rf:
                 data = rf.read()
+                logfilesize = len(data)
+                if len(data) == 0:
+                    continue
+                with open("/tmp/afl.log","w") as wf:
+                    wf.write(data)
+
                 if data.find("All set and ready to roll") > -1:
                     success += 1
                 if len(data) > 1000:
@@ -537,7 +546,21 @@ class AFL(Phuzzer):
                     testfailed +=1
                 if data.find("Fork server handshake failed") > -1:
                     forkfailcnt+=1
-        return {"successcnt":success, "totalcnt":totallogs, "testfailed":testfailed, "failedseeds": failedseeds, "forkfail": forkfailcnt}
+                last_attempted_seed = None
+                for line in data.split("\n"):
+                    if line.find("Attempting dry run with ") > -1:
+                        match = re.search(warningfile_regex, line)
+                        if match:
+                            last_attempted_seed = match.group(1)
+                        else:
+                            last_attempted_seed = None
+                    if line.find("WARNING") > -1:
+                        if line.find("No new instrumentation output") > -1:
+                            if last_attempted_seed:
+                                weakseeds.add(last_attempted_seed)
+                            last_attempted_seed = None
+
+        return {"successcnt":success, "totalcnt":totallogs, "testfailed":testfailed, "failedseeds": failedseeds, "forkfail": forkfailcnt, "weakseeds": weakseeds, 'logfilesize': logfilesize}
 
 
     def log_command(self, args, fuzzer_id, my_env):

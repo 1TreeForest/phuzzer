@@ -45,6 +45,10 @@ class Reporter(Thread):
         self.testversion = testversion
         self.script_filename = ""
         self.chown_files = chown_files
+        self.successcnt = 0
+        self.failedseedcnt = 0
+        self.weakseedcnt = 0
+        self.logfilesize = 0
 
     def set_script_filename(self, script_fn):
         self.script_filename = script_fn
@@ -54,9 +58,15 @@ class Reporter(Thread):
         while self.keepgoing:
             self.generate_report_line()
             time.sleep(1)
-
+            
     def enable_printing(self):
         self.do_printing = True
+
+    def set_startup_values(self, successcnt, failedseedcnt, weakseedcnt, logfilesize):
+        self.successcnt = successcnt
+        self.failedseedcnt = failedseedcnt
+        self.weakseedcnt = weakseedcnt
+        self.logfilesize = logfilesize
 
     def summarize_stats(self):
 
@@ -133,6 +143,13 @@ class Reporter(Thread):
         outstr += f'{self.summary_stats["execs_done"]} at {self.summary_stats["execs_per_sec"]} execs/sec '
         outstr += f'with {self.summary_stats["cycles_done"]} cycles finding {self.summary_stats["paths_total"]} paths and '
         outstr += f'\033[32;5;3m{self.summary_stats["unique_crashes"]} crashes \033[0m'
+        if self.successcnt > 0:
+            outstr += f" {self.successcnt} startups"
+        if self.failedseedcnt > 0:
+            outstr += f" {self.failedseedcnt} bad seeds"
+        if self.weakseedcnt > 0:
+            outstr += f" {self.weakseedcnt} weak seeds"
+        outstr += f" afl log size {self.logfilesize}b "
 
         if self.last_printed_crashes != self.summary_stats["unique_crashes"] or mandatory_print or (
                 self.elapsed_time > 3600 and self.summary_stats["paths_total"] != self.last_printed_paths_total):

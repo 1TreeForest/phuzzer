@@ -55,6 +55,8 @@ def main():
     parser.add_argument('-p','--phuzzer-type', '--fuzzer-type', help="Which phuzzer are you using, AFL, Witcher, AFL_MULTICB.", default=Phuzzer.AFL)
     parser.add_argument('-e', '--extra-crash-signals', '--extra_crash_signals',
                         help="Use extra crash signals SIGABRT and SIGBUS", action='store_true', default=False)
+    parser.add_argument('-F', '--no_fault_escalation', '--no-fault-escalation',
+                        help="Disable Witcher's fault escalation", action='store_true', default=False)
     args = parser.parse_args()
 
     if os.path.isfile(os.path.join(os.getcwd(), args.logcfg)):
@@ -113,7 +115,7 @@ def main():
                               target=args.binary, work_dir=args.work_dir, seeds=seeds, afl_count=args.afl_cores,
                               create_dictionary=not args.no_dictionary, timeout=args.timeout,
                               memory=args.memory, run_timeout=args.run_timeout, dictionary=built_dict, use_qemu=args.use_qemu,
-                              resume=args.resume, target_opts=args.target_opts,
+                              resume=args.resume, target_opts=args.target_opts, fault_escalation=not args.no_fault_escalation,
                               container_info={"name": "hacrs/witcher",
                                               "iid":"35",
                                               "config_cmds": [["mkdir", "-p", f"/Crucible/scratch/35"],

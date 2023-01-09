@@ -32,7 +32,7 @@ class WitcherAFL(AFL):
         crash_mode=False, use_qemu=True,
         run_timeout=None, login_json_fn="",
         server_cmd=None, server_env_vars=None,
-        base_port=None, container_info=None
+        base_port=None, container_info=None, fault_escalation=True
     ):
         """
         :param target: path to the script to fuzz (from AFL)
@@ -95,6 +95,8 @@ class WitcherAFL(AFL):
         self.container_targets = []
         self.running_flag = Value(c_bool, True)
         self.relog = False
+        print(f"\033[38;5;11mFAULT ESCALATION is {fault_escalation}")
+        self.fault_escalation = fault_escalation
         if container_info:
             self.relog = True
 
@@ -176,7 +178,11 @@ class WitcherAFL(AFL):
         self._get_login(my_env, theip)
 
         my_env["AFL_BASE"] = os.path.join(self.work_dir, fuzzer_id)
-        my_env["STRICT"] = "3"
+        if self.fault_escalation:
+            my_env["STRICT"] = "3"
+        elif "STRICT" in my_env:
+            del my_env["STRICT"]
+
         my_env["SCRIPT_NAME"] = my_env.get("SCRIPT_FILENAME","")
         if my_env["SCRIPT_NAME"].startswith("/app"):
             my_env["SCRIPT_NAME"] = my_env.get("SCRIPT_FILENAME","").replace("/app","")
@@ -202,9 +208,12 @@ class WitcherAFL(AFL):
                 scr.write("#! /bin/sh \n")
             else:
                 scr.write("#! /bin/bash \n")
+                # this will prevent multiple fuzzers running at once, should make it appear in work dir
+                scr.write("rm -f /tmp/httpreqr.pid || sudo rm -f /tmp/httpreqr.pid \n")
             for key, val in my_env.items():
                 scr.write(f'export {key}="{val}"\n')
             scr.write(" ".join(final_args) + "\n")
+            scr.write("rm -f /tmp/httpreqr.pid || sudo rm -f /tmp/httpreqr.pid \n")
             #scr.write(f"{final_args[0].replace('afl-fuzz','afl-showmap')} -o /tmp/outmap ")
 
 
@@ -213,11 +222,12 @@ class WitcherAFL(AFL):
 
         with open(logpath, "w") as fp:
             if self.container_info and self.container_info.get("name",None):
-                most_recent_index = len(self.container_targets) -1
+                most_recent_index = len(self.container_targets) - 1
                 run_cmd = [scr_fn]
                 print(f"{run_cmd}")
 
                 proc = self.container_targets[most_recent_index].run_command(run_cmd, stdout=fp, stderr=fp)
+
                 time.sleep(1)
 
                 if proc.returncode and proc.returncode != 0:
@@ -255,6 +265,8 @@ class WitcherAFL(AFL):
 
         if "positiveHeaders" in loginconfig:
             posHeaders = loginconfig.get("positiveHeaders",[])
+            print(posHeaders)
+            print(headers)
             for posname, posvalue in posHeaders.items():
                 found = False
                 for headername, headervalue in headers:
@@ -347,7 +359,10 @@ class WitcherAFL(AFL):
             del myenv["AFL_BASE"]
 
         myenv["METHOD"] = loginconfig["method"]
-        myenv["STRICT"] = "3"
+        if self.fault_escalation:
+            myenv["STRICT"] = "3"
+        elif "STRICT" in myenv:
+            del myenv["STRICT"]
         myenv["SCRIPT_FILENAME"] = loginconfig["url"]
         myenv["SCRIPT_NAME"] = loginconfig["url"]
         if myenv["SCRIPT_NAME"].startswith("/app"):
@@ -375,6 +390,7 @@ class WitcherAFL(AFL):
             with open("/tmp/simple.inp","wb") as wf:
                 wf.write(b"\x00\x00\x00")
             infile = open("/tmp/simple.inp", "rb")
+
             p = subprocess.Popen(login_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, stdin=infile, env=pl_env, close_fds=True)
 
             stdout, stderr = p.communicate(timeout=5)
@@ -414,8 +430,14 @@ class WitcherAFL(AFL):
         with open("/tmp/login_req.dat", "wb") as wf:
             wf.write(httpdata.encode())
 
+        env_str = ""
+        for k, v in myenv.items():
+            if k in "LD_LIBRARY_PATH,DOCUMENT_ROOT,AFL_SET_AFFINITY,SERVER_NAME,STRICT,WC_INSTRUMENTATION,NO_WC_EXTRA,SCRIPT_FILENAME,METHOD,SCRIPT_NAME":
+                env_str += f"export {k}='{v}';"
+        print(f"\033[33m{' '.join(login_cmd)}\n{env_str}\033[0m")
+
         login_req_file = open("/tmp/login_req.dat", "r")
-        print(f"MY ENV [METHOD] = {myenv.get('METHOD','unknown')}")
+
         p = subprocess.Popen(login_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, stdin=login_req_file, env=myenv)
 
         strout, stderr = p.communicate()
@@ -429,12 +451,18 @@ class WitcherAFL(AFL):
         headers = []
         body = ""
         inbody = False
-        start = False
+        #start = False
+        extra_wait = False
         for respline in strout.splitlines():
-            if "END webcam_trace_init" in respline:
-                start = True
-                continue
-            if len(respline) == 0 and start:
+            # if "END webcam_trace_init" in respline:
+            #     start = True
+            #     continue
+            if respline.find("@@@@@@@@@@@@@") > -1:
+                extra_wait = True 
+            if len(respline) == 0:# and start:
+                if extra_wait:
+                    extra_wait=False
+                    continue
                 inbody = True
                 continue
             if inbody:
@@ -446,7 +474,7 @@ class WitcherAFL(AFL):
                     headerval = ":".join(header[1:])
                     headerval = headerval.lstrip()
                     headers.append((headername, headerval))
-
+        
         if not self._check_for_authorized_response(body, headers, loginconfig):
             print("\033[31mFailed to get authorization\033[0m")
             print(f"headers={headers}")
