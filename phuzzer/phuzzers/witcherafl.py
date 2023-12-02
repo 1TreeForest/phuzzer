@@ -176,7 +176,6 @@ class WitcherAFL(AFL):
         #print(f"TARGET OPTS::::: {final_args}")
 
         self._get_login(my_env, theip)
-
         my_env["AFL_BASE"] = os.path.join(self.work_dir, fuzzer_id)
         if self.fault_escalation:
             my_env["STRICT"] = "3"
@@ -264,9 +263,9 @@ class WitcherAFL(AFL):
     def _check_headers(headers, loginconfig):
 
         if "positiveHeaders" in loginconfig:
-            posHeaders = loginconfig.get("positiveHeaders",[])
-            print(posHeaders)
-            print(headers)
+            posHeaders = loginconfig.get("positiveHeaders",{})
+            print("posHeaders: ", posHeaders)
+            print("headers: ", headers)
             for posname, posvalue in posHeaders.items():
                 found = False
                 for headername, headervalue in headers:
@@ -344,13 +343,13 @@ class WitcherAFL(AFL):
                 authdata.append((headername, headervalue))
 
         if login_auth_cookies:
-            print(login_auth_cookies)
+            print("login_auth_cookies: ", login_auth_cookies)
             authdata.append(("LOGIN_COOKIE",";".join(login_auth_cookies)))
 
         return authdata
 
     def _do_local_cgi_req_login(self, loginconfig):
-
+        print
         login_cmd = [loginconfig["cgiBinary"]]
 
         # print("[WC] \033[34m starting with command " + str(login_cmd) + "\033[0m")
@@ -487,7 +486,7 @@ class WitcherAFL(AFL):
         return self._extract_authdata(headers, loginconfig)
 
     def _do_httpreqr_login(self, loginconfig, ipaddress=None, relogging=False):
-
+        print("HTTP REQR LOGIN")
         url = loginconfig["url"]
         url = url.replace("@@PORT_INCREMENT@@", str(18080))
 
@@ -528,7 +527,7 @@ class WitcherAFL(AFL):
 
     @staticmethod
     def _do_http_req_login(loginconfig, ipaddress=None, relogging=False):
-
+        print("HTTP REQ LOGIN")
         url = loginconfig["url"]
         url = url.replace("@@PORT_INCREMENT@@", str(18080))
 
@@ -552,6 +551,16 @@ class WitcherAFL(AFL):
         response = urllib.request.urlopen(req)
         headers = response.getheaders()
         body = response.read()
+        #+   To fix a bug in OpenEMR experimental,
+        #+   cgi cookie is expired and the second http cookie is alive
+        if url.find("openemr") > -1:
+            # Find the second Set-Cookie header
+            cookie_data = ""
+            for header in headers:
+                if header[0].upper() == "SET-COOKIE":
+                    cookie_data = header
+                    headers.remove(header)
+            headers.append(cookie_data)
 
         # ipdb.set_trace()
 
@@ -587,8 +596,9 @@ class WitcherAFL(AFL):
             for adname, advalue in authdata:
                 adname = adname.replace("LOGIN_COOKIE","Cookie")
                 req_headers[adname] = advalue
-                req = urllib.request.Request(url, post_data, req_headers)
-                urllib.request.urlopen(req)
+                
+            req = urllib.request.Request(url, post_data, req_headers)
+            urllib.request.urlopen(req)
 
     def _get_login(self, my_env, ipaddress=None):
 
@@ -633,15 +643,14 @@ class WitcherAFL(AFL):
                 WitcherAFL._do_authorized_requests(loginconfig, authdata)
             else:
                 authdata = self._do_local_cgi_req_login(loginconfig)
+                print(f"[*] Authorized data = {authdata}")
             if authdata is not None:
                 break
             time.sleep(5)
 
         if authdata is None:
             raise ValueError("Login failed to return authenticated cookie/bearer value")
-
         for authname, authvalue in authdata:
-
             my_env[authname] = authvalue
 
     def _do_relog(self, loginconfig, ipaddress, running_flag):
@@ -654,7 +663,7 @@ class WitcherAFL(AFL):
         for saved_sess_fn in glob.iglob("/tmp/save_????????????????????*"):
             if saved_sess_fn not in self.used_sessions:
                 sess_fn = saved_sess_fn.replace("save", "sess")
-                # print("sess_fn=" + sess_fn)
+                print("sess_fn=" + sess_fn)
                 self.used_sessions.add(saved_sess_fn)
                 shutil.copyfile(saved_sess_fn, sess_fn)
 
