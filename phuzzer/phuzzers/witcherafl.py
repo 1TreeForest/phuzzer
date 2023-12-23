@@ -349,7 +349,7 @@ class WitcherAFL(AFL):
         return authdata
 
     def _do_local_cgi_req_login(self, loginconfig):
-        print
+        print("LOCAL CGI LOGIN")
         login_cmd = [loginconfig["cgiBinary"]]
 
         # print("[WC] \033[34m starting with command " + str(login_cmd) + "\033[0m")
@@ -477,8 +477,8 @@ class WitcherAFL(AFL):
         if not self._check_for_authorized_response(body, headers, loginconfig):
             print("\033[31mFailed to get authorization\033[0m")
             print(f"headers={headers}")
-            #print(f"body={body}")
-            print(f"strout={byteout}")
+            print(f"body={body}")
+            #print(f"strout={byteout}")
             exit(33)
             #raise Exception("Failed to get authorization")
             #return []
@@ -551,16 +551,15 @@ class WitcherAFL(AFL):
         response = urllib.request.urlopen(req)
         headers = response.getheaders()
         body = response.read()
-        #+   To fix a bug in OpenEMR experimental,
-        #+   cgi cookie is expired and the second http cookie is alive
-        if url.find("openemr") > -1:
-            # Find the second Set-Cookie header
-            cookie_data = ""
-            for header in headers:
-                if header[0].upper() == "SET-COOKIE":
-                    cookie_data = header
-                    headers.remove(header)
-            headers.append(cookie_data)
+        #+   To fix a bug in getting cookie
+        #+   the second http cookie is alive
+        # Find the second Set-Cookie header
+        cookie_data = ""
+        for header in headers:
+            if header[0].upper() == "SET-COOKIE":
+                cookie_data = header
+                headers.remove(header)
+        headers.append(cookie_data)
 
         # ipdb.set_trace()
 
