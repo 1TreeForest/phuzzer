@@ -343,6 +343,14 @@ class WitcherAFL(AFL):
                 authdata.append((headername, headervalue))
 
         if login_auth_cookies:
+            login_auth_cookies_dict = {}
+            for cookie in login_auth_cookies:
+                items = cookie.split(";")
+                for item in items:
+                    if "=" in item:
+                        key, value = item.split("=")
+                        login_auth_cookies_dict[key] = value
+            login_auth_cookies = [f"{k}={v}" for k, v in login_auth_cookies_dict.items()]
             print("login_auth_cookies: ", login_auth_cookies)
             authdata.append(("LOGIN_COOKIE",";".join(login_auth_cookies)))
 
@@ -551,15 +559,6 @@ class WitcherAFL(AFL):
         response = urllib.request.urlopen(req)
         headers = response.getheaders()
         body = response.read()
-        #+   To fix a bug in getting cookie
-        #+   the second http cookie is alive
-        # Find the second Set-Cookie header
-        cookie_data = ""
-        for header in headers:
-            if header[0].upper() == "SET-COOKIE":
-                cookie_data = header
-                headers.remove(header)
-        headers.append(cookie_data)
 
         # ipdb.set_trace()
 
