@@ -569,8 +569,7 @@ class WitcherAFL(AFL):
             print(f"\tresponse={response.getcode()}")
             print(f"\tresponse={response.getheaders()}")
             if not relogging:
-                exit(33)
-
+                raise Exception("Failed to get authorization")
 
         return body, headers
 
@@ -624,10 +623,14 @@ class WitcherAFL(AFL):
             return
 
         authdata = None
-        for _ in range(0, 10):
+        while True:
             if loginconfig["url"].startswith("http"):
-
-                _, headers = self._do_http_req_login(loginconfig, ipaddress)
+                try:
+                    _, headers = self._do_http_req_login(loginconfig, ipaddress)
+                except Exception as e:
+                    print(f"{e} while trying to login, retrying...")
+                    time.sleep(5)
+                    continue
 
                 authdata = self._extract_authdata(headers, loginconfig)
 
