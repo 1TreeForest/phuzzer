@@ -2,6 +2,7 @@ from collections import defaultdict
 from ..errors import InstallError
 from ..util import hexescape
 from . import Phuzzer
+from time import sleep
 import pkg_resources
 import subprocess
 import contextlib
@@ -68,7 +69,17 @@ class AFL(Phuzzer):
             l.info("could resume, but starting over upon request")
             os.system(f"sudo chown {pwd.getpwuid( os.getuid() ).pw_uid}:{pwd.getpwuid( os.getuid() ).pw_uid} -R .")
             with contextlib.suppress(FileNotFoundError):
-                shutil.rmtree(self.work_dir)
+                while True:
+                    try:
+                        shutil.rmtree(self.work_dir)
+                        break
+                    except OSError as e:
+                        if e.errno == 39:
+                            print(e)
+                            sleep(1)
+                            continue
+                        else:
+                            break
             self.in_dir = seeds_dir or os.path.join(self.work_dir, "initial_seeds")
             with contextlib.suppress(FileExistsError):
                 os.makedirs(self.in_dir, 0o777)
