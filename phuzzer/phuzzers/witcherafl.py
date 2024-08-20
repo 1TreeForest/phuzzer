@@ -249,7 +249,7 @@ class WitcherAFL(AFL):
     @staticmethod
     def _check_body(body, loginconfig):
         try:
-            body = body.decode()
+            body = body.decode(errors='ignore')
         except (UnicodeDecodeError, AttributeError):
             pass
         if "positiveBody" in loginconfig and len(loginconfig["positiveBody"]) > 1:
