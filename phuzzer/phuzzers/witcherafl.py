@@ -32,7 +32,8 @@ class WitcherAFL(AFL):
         crash_mode=False, use_qemu=True,
         run_timeout=None, login_json_fn="",
         server_cmd=None, server_env_vars=None,
-        base_port=None, container_info=None, fault_escalation=True
+        base_port=None, container_info=None, fault_escalation=True,
+        dual_url_config=None
     ):
         """
         :param target: path to the script to fuzz (from AFL)
@@ -97,6 +98,7 @@ class WitcherAFL(AFL):
         self.relog = False
         print(f"\033[38;5;11mFAULT ESCALATION is {fault_escalation}")
         self.fault_escalation = fault_escalation
+        self.dual_url_config = dual_url_config or {}
         if container_info:
             self.relog = True
 
@@ -215,6 +217,62 @@ class WitcherAFL(AFL):
             scr.write("rm -f /tmp/httpreqr.pid || sudo rm -f /tmp/httpreqr.pid \n")
             #scr.write(f"{final_args[0].replace('afl-fuzz','afl-showmap')} -o /tmp/outmap ")
 
+        # Create shadow fuzzer instance for dual URL mode
+        shadow_scr_fn = None
+        shadow_proc = None
+        if "PRIMARY_URL" in my_env and "SECONDARY_URL" in my_env:
+            primary_url = my_env["PRIMARY_URL"]
+            secondary_url = my_env["SECONDARY_URL"]
+            
+            # Use the same work directory for both main and shadow fuzzer
+            shadow_work_dir = self.work_dir
+            
+            # Create shadow fuzzer script in the same work directory
+            shadow_scr_fn = f"{shadow_work_dir}/fuzz-shadow-{instance_cnt}.sh"
+            shadow_env = my_env.copy()
+            
+            # Update environment for shadow fuzzer
+            shadow_env["SCRIPT_FILENAME"] = secondary_url
+            shadow_env["SCRIPT_NAME"] = secondary_url
+            if shadow_env["SCRIPT_NAME"].startswith("/app"):
+                shadow_env["SCRIPT_NAME"] = shadow_env["SCRIPT_NAME"].replace("/app","")
+            
+            # Create separate AFL base directory for shadow fuzzer (within same work dir)
+            shadow_env["AFL_BASE"] = os.path.join(shadow_work_dir, f"{fuzzer_id}-shadow")
+            
+            # Create shadow fuzzer script
+            with open(shadow_scr_fn, "w") as shadow_scr:
+                if self.container_info:
+                    shadow_scr.write("#! /bin/sh \n")
+                else:
+                    shadow_scr.write("#! /bin/bash \n")
+                    shadow_scr.write("rm -f /tmp/httpreqr.pid || sudo rm -f /tmp/httpreqr.pid \n")
+                
+                for key, val in shadow_env.items():
+                    shadow_scr.write(f'export {key}="{val}"\n')
+                
+                # Modify AFL arguments for shadow fuzzer - add shadow suffix to fuzzer name
+                shadow_args = []
+                i = 0
+                while i < len(final_args):
+                    arg = final_args[i]
+                    if (arg == "-M" or arg == "-S") and i + 1 < len(final_args):
+                        # This is the fuzzer name flag, add shadow suffix to the next argument (fuzzer name)
+                        shadow_args.append(arg)
+                        shadow_args.append(final_args[i + 1] + "-shadow")
+                        i += 2
+                    else:
+                        shadow_args.append(arg)
+                        i += 1
+                
+                shadow_scr.write(" ".join(shadow_args) + "\n")
+                shadow_scr.write("rm -f /tmp/httpreqr.pid || sudo rm -f /tmp/httpreqr.pid \n")
+            
+            os.chmod(shadow_scr_fn, mode=0o774)
+            print(f"[WitcherAFL] Created shadow fuzzer script: {shadow_scr_fn}")
+            print(f"[WitcherAFL] Shadow fuzzer work directory: {shadow_work_dir}")
+            print(f"[WitcherAFL] Shadow fuzzer target: {secondary_url}")
+
 
         l.info(f"Fuzz command written out to {scr_fn}")
         os.chmod(scr_fn, mode=0o774)
@@ -227,6 +285,14 @@ class WitcherAFL(AFL):
 
                 proc = self.container_targets[most_recent_index].run_command(run_cmd, stdout=fp, stderr=fp)
 
+                # Start shadow fuzzer if dual URL mode is enabled
+                if shadow_scr_fn:
+                    shadow_logpath = os.path.join(self.work_dir, f"{fuzzer_id}-shadow.log")
+                    with open(shadow_logpath, "w") as shadow_fp:
+                        shadow_run_cmd = [shadow_scr_fn]
+                        print(f"[WitcherAFL] Starting shadow fuzzer: {shadow_run_cmd}")
+                        shadow_proc = self.container_targets[most_recent_index].run_command(shadow_run_cmd, stdout=shadow_fp, stderr=shadow_fp)
+
                 time.sleep(1)
 
                 if proc.returncode and proc.returncode != 0:
@@ -237,7 +303,17 @@ class WitcherAFL(AFL):
                 return proc
 
             else:
-                return subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+                main_proc = subprocess.Popen([scr_fn], stdout=fp, stderr=fp, close_fds=True)
+                
+                # Start shadow fuzzer if dual URL mode is enabled
+                if shadow_scr_fn:
+                    shadow_logpath = os.path.join(self.work_dir, f"{fuzzer_id}-shadow.log")
+                    with open(shadow_logpath, "w") as shadow_fp:
+                        print(f"[WitcherAFL] Starting shadow fuzzer: {shadow_scr_fn}")
+                        shadow_proc = subprocess.Popen([shadow_scr_fn], stdout=shadow_fp, stderr=shadow_fp, close_fds=True)
+                        print(f"[WitcherAFL] Shadow fuzzer PID: {shadow_proc.pid}")
+                
+                return main_proc
 
         # with open(logpath, "w") as fp:
         #     return subprocess.Popen(final_args, stdout=fp, stderr=fp, close_fds=True, env=my_env)
