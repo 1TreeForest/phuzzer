@@ -228,7 +228,7 @@ class WitcherAFL(AFL):
             shadow_work_dir = self.work_dir
             
             # Create shadow fuzzer script in the same work directory
-            shadow_scr_fn = f"{shadow_work_dir}/fuzz-shadow-{instance_cnt}.sh"
+            shadow_scr_fn = f"{shadow_work_dir}/fuzz-{instance_cnt}-shadow.sh"
             shadow_env = my_env.copy()
             
             # Update environment for shadow fuzzer
@@ -237,8 +237,7 @@ class WitcherAFL(AFL):
             if shadow_env["SCRIPT_NAME"].startswith("/app"):
                 shadow_env["SCRIPT_NAME"] = shadow_env["SCRIPT_NAME"].replace("/app","")
             
-            # Create separate AFL base directory for shadow fuzzer (within same work dir)
-            shadow_env["AFL_BASE"] = os.path.join(shadow_work_dir, f"{fuzzer_id}-shadow")
+            shadow_env["AFL_BASE"] = os.path.join(self.work_dir, fuzzer_id + "-shadow")
             
             # Create shadow fuzzer script
             with open(shadow_scr_fn, "w") as shadow_scr:
@@ -251,17 +250,25 @@ class WitcherAFL(AFL):
                 for key, val in shadow_env.items():
                     shadow_scr.write(f'export {key}="{val}"\n')
                 
-                # Modify AFL arguments for shadow fuzzer - add shadow suffix to fuzzer name
+                # Modify AFL arguments for shadow fuzzer
+                # Shadow fuzzer should be identical to main fuzzer except for output directory
                 shadow_args = []
                 i = 0
                 while i < len(final_args):
                     arg = final_args[i]
-                    if (arg == "-M" or arg == "-S") and i + 1 < len(final_args):
-                        # This is the fuzzer name flag, add shadow suffix to the next argument (fuzzer name)
+                    if arg == "-o" and i + 1 < len(final_args):
+                        # Output directory should be the same as main fuzzer (both use work_dir)
+                        # AFL will create subdirectories within this for different fuzzers
+                        shadow_args.append(arg)
+                        shadow_args.append(final_args[i + 1])  # Keep same work_dir, no -shadow suffix
+                        i += 2
+                    elif (arg == "-M" or arg == "-S") and i + 1 < len(final_args):
+                        # Fuzzer name flag, add shadow suffix to distinguish from main fuzzer
                         shadow_args.append(arg)
                         shadow_args.append(final_args[i + 1] + "-shadow")
                         i += 2
                     else:
+                        # All other arguments should be identical to main fuzzer
                         shadow_args.append(arg)
                         i += 1
                 
