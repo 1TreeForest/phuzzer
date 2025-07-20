@@ -340,6 +340,11 @@ class WitcherAFL(AFL):
             pattern = re.compile(positive_body)
             res = pattern.search(body)
             test = res is not None
+            print(f"\033[36mChecking positiveBody pattern: '{positive_body}' -> {'FOUND' if test else 'NOT FOUND'}\033[0m")
+            if not test and body:
+                # Print first 200 chars of body for debugging
+                body_preview = body[:200] + ("..." if len(body) > 200 else "")
+                print(f"\033[33mResponse body preview: {body_preview}\033[0m")
             return test
         return True
 
@@ -516,66 +521,195 @@ class WitcherAFL(AFL):
             if len(extra_form_data) > 0:
                 postData += "&" + extra_form_data
         print(f"cookiedData2={cookieData}")
-        httpdata = f'{cookieData}\x00{getData}\x00{postData}\x00'
-
-        with open("/tmp/login_req.dat", "wb") as wf:
-            wf.write(httpdata.encode())
-
-        env_str = ""
-        for k, v in myenv.items():
-            if k in "LD_LIBRARY_PATH,DOCUMENT_ROOT,AFL_SET_AFFINITY,SERVER_NAME,STRICT,WC_INSTRUMENTATION,NO_WC_EXTRA,SCRIPT_FILENAME,METHOD,SCRIPT_NAME":
-                env_str += f"export {k}='{v}';"
-        print(f"\033[33m{' '.join(login_cmd)}\n{env_str}\033[0m")
-
-        login_req_file = open("/tmp/login_req.dat", "r")
-
-        p = subprocess.Popen(login_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, stdin=login_req_file, env=myenv)
-
-        strout, stderr = p.communicate()
-        login_req_file.close()
-
-        if stderr:
-            print(f"stderr = {stderr}")
-        byteout = strout
-        strout = strout.decode('latin-1')
-
-        headers = []
-        body = ""
-        inbody = False
-        #start = False
-        extra_wait = False
-        for respline in strout.splitlines():
-            # if "END webcam_trace_init" in respline:
-            #     start = True
-            #     continue
-            if respline.find("@@@@@@@@@@@@@") > -1:
-                extra_wait = True 
-            if len(respline) == 0:# and start:
-                if extra_wait:
-                    extra_wait=False
-                    continue
-                inbody = True
-                continue
-            if inbody:
-                body += respline + "\n"
-            else:
-                header = respline.split(":")
-                if len(header) > 1:
-                    headername = header[0].strip()
-                    headerval = ":".join(header[1:])
-                    headerval = headerval.lstrip()
-                    headers.append((headername, headerval))
+        # Handle redirects manually with cookie propagation for CGI
+        max_redirects = 3
+        redirect_count = 0
+        current_script = loginconfig["url"]
+        current_method = loginconfig["method"]
+        current_getData = getData
+        current_postData = postData
+        current_cookieData = cookieData
+        current_cookies = {}
+        final_headers = []
+        final_body = ""
         
-        if not self._check_for_authorized_response(body, headers, loginconfig):
+        # Parse initial cookies into dictionary
+        if current_cookieData:
+            for cookie_part in current_cookieData.split(";"):
+                cookie_part = cookie_part.strip()
+                if '=' in cookie_part:
+                    cookie_name, cookie_value = cookie_part.split('=', 1)
+                    current_cookies[cookie_name] = cookie_value
+        
+        while redirect_count < max_redirects:
+            print(f"\033[36mCGI Request #{redirect_count + 1} to: {current_script}\033[0m")
+            print(f"Method: {current_method}, GET Data: {current_getData}, POST Data: {current_postData}")
+            
+            # Update environment for current request
+            myenv["SCRIPT_FILENAME"] = current_script
+            myenv["SCRIPT_NAME"] = current_script
+            if myenv["SCRIPT_NAME"].startswith("/app"):
+                myenv["SCRIPT_NAME"] = myenv["SCRIPT_NAME"].replace("/app","")
+            myenv["METHOD"] = current_method
+            
+            # Reconstruct cookie data from current cookies
+            if current_cookies:
+                current_cookieData = "; ".join([f"{name}={value}" for name, value in current_cookies.items()])
+                print(f"\033[33mUsing cookies: {current_cookieData}\033[0m")
+            else:
+                current_cookieData = ""
+            
+            httpdata = f'{current_cookieData}\x00{current_getData}\x00{current_postData}\x00'
+
+            with open("/tmp/login_req.dat", "wb") as wf:
+                wf.write(httpdata.encode())
+
+            env_str = ""
+            for k, v in myenv.items():
+                if k in "LD_LIBRARY_PATH,DOCUMENT_ROOT,AFL_SET_AFFINITY,SERVER_NAME,STRICT,WC_INSTRUMENTATION,NO_WC_EXTRA,SCRIPT_FILENAME,METHOD,SCRIPT_NAME":
+                    env_str += f"export {k}='{v}';"
+            print(f"\033[33m{' '.join(login_cmd)}\n{env_str}\033[0m")
+
+            login_req_file = open("/tmp/login_req.dat", "r")
+
+            p = subprocess.Popen(login_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, stdin=login_req_file, env=myenv)
+
+            strout, stderr = p.communicate()
+            login_req_file.close()
+
+            if stderr:
+                print(f"stderr = {stderr}")
+            byteout = strout
+            strout = strout.decode('latin-1')
+
+            headers = []
+            body = ""
+            inbody = False
+            #start = False
+            extra_wait = False
+            for respline in strout.splitlines():
+                # if "END webcam_trace_init" in respline:
+                #     start = True
+                #     continue
+                if respline.find("@@@@@@@@@@@@@") > -1:
+                    extra_wait = True 
+                if len(respline) == 0:# and start:
+                    if extra_wait:
+                        extra_wait=False
+                        continue
+                    inbody = True
+                    continue
+                if inbody:
+                    body += respline + "\n"
+                else:
+                    header = respline.split(":")
+                    if len(header) > 1:
+                        headername = header[0].strip()
+                        headerval = ":".join(header[1:])
+                        headerval = headerval.lstrip()
+                        headers.append((headername, headerval))
+            
+            final_headers = headers
+            final_body = body
+            
+            # Check for redirect and extract cookies
+            status_code = None
+            location = None
+            
+            for headername, headerval in headers:
+                if headername.lower() == "status":
+                    try:
+                        status_code = int(headerval.split()[0])
+                    except (ValueError, IndexError):
+                        pass
+                elif headername.lower() == "location":
+                    location = headerval
+                elif headername.lower() == "set-cookie":
+                    # Extract cookie name=value part
+                    cookie_part = headerval.split(';')[0].strip()
+                    if '=' in cookie_part:
+                        cookie_name, cookie_value = cookie_part.split('=', 1)
+                        current_cookies[cookie_name] = cookie_value
+                        print(f"\033[33mAdded CGI cookie: {cookie_name}={cookie_value}\033[0m")
+            
+            print(f"\033[36mCGI Response status: {status_code or 'unknown'}\033[0m")
+            if current_cookies:
+                print(f"\033[33mCurrent CGI cookies: {current_cookies}\033[0m")
+            
+            # Check if it's a redirect
+            if status_code and 300 <= status_code < 400 and location:
+                print(f"\033[36mCGI redirecting to: {location}\033[0m")
+                
+                # Handle different types of location headers
+                if location.startswith("http://SCRIPT/") or location.startswith("https://SCRIPT/"):
+                    # Convert SCRIPT-based location to file path
+                    new_path = location.replace("http://SCRIPT", "").replace("https://SCRIPT", "")
+                    if new_path.startswith("/app/"):
+                        current_script = new_path
+                    else:
+                        current_script = "/app" + new_path
+                elif location.startswith("http://") or location.startswith("https://"):
+                    # Full URL - extract path portion
+                    from urllib.parse import urlparse
+                    parsed = urlparse(location)
+                    if parsed.path.startswith("/app/"):
+                        current_script = parsed.path
+                    else:
+                        current_script = "/app" + parsed.path
+                    
+                    # Parse query parameters
+                    if parsed.query:
+                        current_getData = parsed.query
+                    else:
+                        current_getData = ""
+                elif location.startswith("/"):
+                    # Absolute path
+                    if location.startswith("/app/"):
+                        current_script = location
+                    else:
+                        current_script = "/app" + location
+                else:
+                    current_dir = os.path.dirname(current_script)
+                    current_script = os.path.join(current_dir, location).replace("\\", "/")
+                
+                print(f"\033[36mResolved CGI script path: {current_script}\033[0m")
+                
+                redirect_count += 1
+                
+                # For redirects, switch to GET method and clear POST data
+                current_method = "GET"
+                current_postData = ""
+                print(f"\033[36mSwitching to GET method for CGI redirect\033[0m")
+                
+                continue
+            else:
+                # Not a redirect, we're done
+                print(f"\033[32mFinal CGI response received after {redirect_count} redirects\033[0m")
+                break
+        
+        if redirect_count >= max_redirects:
+            print(f"\033[31mWarning: Maximum CGI redirects ({max_redirects}) reached\033[0m")
+        
+        if not self._check_for_authorized_response(final_body, final_headers, loginconfig):
             print("\033[31mFailed to get authorization\033[0m")
-            print(f"headers={headers}")
-            print(f"body={body}")
+            print(f"Final CGI Script = {current_script}")
+            print(f"Final CGI Cookies = {current_cookies}")
+            print(f"headers={final_headers}")
+            print(f"body={final_body}")
             #print(f"strout={byteout}")
             exit(33)
             #raise Exception("Failed to get authorization")
             #return []
 
-        return self._extract_authdata(headers, loginconfig)
+        # Use collected cookies from redirect process as auth data if available  
+        if current_cookies:
+            cookie_header = "; ".join([f"{name}={value}" for name, value in current_cookies.items()])
+            authdata = [("LOGIN_COOKIE", cookie_header)]
+            print(f"[*] Using collected CGI cookies as auth data: {cookie_header}")
+            return authdata
+        else:
+            authdata = self._extract_authdata(final_headers, loginconfig)
+            return authdata
 
     def _do_httpreqr_login(self, loginconfig, ipaddress=None, relogging=False):
         print("HTTP REQR LOGIN")
