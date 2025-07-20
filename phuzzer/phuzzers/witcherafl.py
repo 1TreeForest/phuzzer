@@ -303,8 +303,8 @@ class WitcherAFL(AFL):
                 time.sleep(1)
 
                 if proc.returncode and proc.returncode != 0:
-                    import ipdb
-                    ipdb.set_trace()
+                    # import ipdb
+                    # ipdb.set_trace()
                     raise Exception("Error fuzzer failed to start")
 
                 return proc
@@ -336,7 +336,8 @@ class WitcherAFL(AFL):
         except (UnicodeDecodeError, AttributeError):
             pass
         if "positiveBody" in loginconfig and len(loginconfig["positiveBody"]) > 1:
-            pattern = re.compile(loginconfig["positiveBody"])
+            positive_body = loginconfig["positiveBody"]
+            pattern = re.compile(positive_body)
             res = pattern.search(body)
             test = res is not None
             return test
@@ -365,8 +366,8 @@ class WitcherAFL(AFL):
         if len(session_name) == "":
             session_name = ".*"
 
-        import ipdb
-        ipdb.set_trace()
+        # import ipdb
+        # ipdb.set_trace()
         sessidrex = re.compile(rf"({session_name})=(?P<sessid>[a-z0-9_\-A-Z\%]{{24,256}})")
 
 
@@ -629,32 +630,162 @@ class WitcherAFL(AFL):
             url = url.replace("127.0.0.1", ipaddress)
 
         post_data = loginconfig["postData"] if "postData" in loginconfig else ""
+        original_post_data = post_data
         post_data = post_data.encode('ascii')
 
-        req_headers = loginconfig["headers"] if "headSCers" in loginconfig else {}
-        method = loginconfig.get("method", "GET")
+        req_headers = loginconfig["headers"] if "headers" in loginconfig else {}
+        original_method = loginconfig.get("method", "GET")
+        method = original_method
+        
+        # Handle redirects manually with cookie propagation
+        max_redirects = 3
+        redirect_count = 0
+        current_url = url
+        current_cookies = {}
+        final_headers = []
+        final_body = b""
+        
         opener = urllib.request.build_opener(NoRedirection)
         urllib.request.install_opener(opener)
-        print(f"headers={req_headers}")
-        print(f"post={post_data}")
-        req = urllib.request.Request(url, post_data, req_headers, method=method)
+        
+        while redirect_count < max_redirects:
+            print(f"\033[36mHTTP Request #{redirect_count + 1} to: {current_url}\033[0m")
+            print(f"Method: {method}, Post Data: {post_data}")
+            
+            # Create request with current cookies
+            current_req_headers = req_headers.copy()
+            if current_cookies:
+                cookie_header = "; ".join([f"{name}={value}" for name, value in current_cookies.items()])
+                current_req_headers["Cookie"] = cookie_header
+                print(f"\033[33mUsing cookies: {cookie_header}\033[0m")
+            
+            print(f"headers={current_req_headers}")
+            req = urllib.request.Request(current_url, post_data, current_req_headers, method=method)
 
-        response = urllib.request.urlopen(req)
-        headers = response.getheaders()
-        body = response.read()
+            try:
+                response = urllib.request.urlopen(req)
+                headers = response.getheaders()
+                body = response.read()
+                status_code = response.getcode()
+                
+                print(f"\033[36mResponse code: {status_code}\033[0m")
+                
+                # Accumulate cookies from response (keep all previous cookies)
+                for header_name, header_value in headers:
+                    if header_name.lower() == "set-cookie":
+                        cookie_part = header_value.split(';')[0].strip()
+                        if '=' in cookie_part:
+                            cookie_name, cookie_value = cookie_part.split('=', 1)
+                            current_cookies[cookie_name] = cookie_value
+                #             print(f"\033[33mAdded cookie: {cookie_name}={cookie_value}\033[0m")
+                # print(f"\033[33mAll cookies so far: {current_cookies}\033[0m")
+                
+                final_headers = headers
+                final_body = body
+                
+                # Check if it's a redirect (3xx status codes)
+                if 300 <= status_code < 400:
+                    location = None
+                    for header_name, header_value in headers:
+                        if header_name.lower() == "location":
+                            location = header_value
+                            break
+                    
+                    if location:
+                        print(f"\033[36mRedirecting to: {location}\033[0m")
+                        
+                        # Handle relative URLs
+                        if location.startswith('/'):
+                            from urllib.parse import urlparse, urlunparse
+                            parsed_current = urlparse(current_url)
+                            location = urlunparse((parsed_current.scheme, parsed_current.netloc, location, '', '', ''))
+                        elif not location.startswith('http'):
+                            from urllib.parse import urljoin
+                            location = urljoin(current_url, location)
+                        
+                        current_url = location
+                        redirect_count += 1
+                        
+                        # For redirects, switch to GET method and clear POST data
+                        method = "GET"
+                        post_data = b""
+                        print(f"\033[36mSwitching to GET method for redirect\033[0m")
+                        
+                        continue
+                    else:
+                        print(f"\033[31mWarning: Got redirect status {status_code} but no Location header\033[0m")
+                        break
+                else:
+                    # Not a redirect, we're done
+                    print(f"\033[32mFinal response received after {redirect_count} redirects\033[0m")
+                    break
+                    
+            except urllib.error.HTTPError as e:
+                print(f"\033[31mHTTP Error {e.code}: {e.reason}\033[0m")
+                final_headers = e.headers.items() if hasattr(e.headers, 'items') else []
+                final_body = e.read() if hasattr(e, 'read') else b""
+                
+                # Accumulate cookies even from error responses (keep all previous cookies)
+                for header_name, header_value in final_headers:
+                    if header_name.lower() == "set-cookie":
+                        cookie_part = header_value.split(';')[0].strip()
+                        if '=' in cookie_part:
+                            cookie_name, cookie_value = cookie_part.split('=', 1)
+                            current_cookies[cookie_name] = cookie_value
+                            print(f"\033[33mAdded cookie from error: {cookie_name}={cookie_value}\033[0m")
+                print(f"\033[33mAll cookies after error: {current_cookies}\033[0m")
+                
+                # Check for redirects in error responses
+                if 300 <= e.code < 400:
+                    location = None
+                    for header_name, header_value in final_headers:
+                        if header_name.lower() == "location":
+                            location = header_value
+                            break
+                    
+                    if location:
+                        print(f"\033[36mRedirecting from error to: {location}\033[0m")
+                        if location.startswith('/'):
+                            from urllib.parse import urlparse, urlunparse
+                            parsed_current = urlparse(current_url)
+                            location = urlunparse((parsed_current.scheme, parsed_current.netloc, location, '', '', ''))
+                        elif not location.startswith('http'):
+                            from urllib.parse import urljoin
+                            location = urljoin(current_url, location)
+                        
+                        current_url = location
+                        redirect_count += 1
+                        
+                        # Switch to GET for redirect
+                        method = "GET"  
+                        post_data = b""
+                        print(f"\033[36mSwitching to GET method for error redirect\033[0m")
+                        
+                        continue
+                
+                # If not a redirect error, break
+                break
+                
+            except Exception as e:
+                print(f"\033[31mError during HTTP request: {e}\033[0m")
+                raise
+        
+        if redirect_count >= max_redirects:
+            print(f"\033[31mWarning: Maximum redirects ({max_redirects}) reached\033[0m")
 
         # ipdb.set_trace()
 
-        if not WitcherAFL._check_for_authorized_response(body, headers, loginconfig):
+        if not WitcherAFL._check_for_authorized_response(final_body, final_headers, loginconfig):
             print("[Witcher] \033[31mFAILED to get AUTHORIZATION\033[0m")
-            print(f"\tURL = {url}")
-            #print(f"\tresponse={body}")
-            print(f"\tresponse={response.getcode()}")
-            print(f"\tresponse={response.getheaders()}")
+            print(f"\tFinal URL = {current_url}")
+            print(f"\tFinal Cookies = {current_cookies}")
+            #print(f"\tresponse={final_body}")
+            print(f"\tresponse={status_code if 'status_code' in locals() else 'unknown'}")
+            print(f"\tresponse={final_headers}")
             if not relogging:
                 raise Exception("Failed to get authorization")
 
-        return body, headers
+        return final_body, final_headers, current_cookies
 
     @staticmethod
     def _do_authorized_requests(loginconfig, authdata):
@@ -709,13 +840,19 @@ class WitcherAFL(AFL):
         while True:
             if loginconfig["url"].startswith("http"):
                 try:
-                    _, headers = self._do_http_req_login(loginconfig, ipaddress)
+                    final_body, final_headers, collected_cookies = WitcherAFL._do_http_req_login(loginconfig, ipaddress)
                 except Exception as e:
                     print(f"{e} while trying to login, retrying...")
                     time.sleep(5)
                     continue
 
-                authdata = self._extract_authdata(headers, loginconfig)
+                # Use collected cookies from redirect process as auth data if available
+                if collected_cookies:
+                    cookie_header = "; ".join([f"{name}={value}" for name, value in collected_cookies.items()])
+                    authdata = [("LOGIN_COOKIE", cookie_header)]
+                    print(f"[*] Using collected cookies as auth data: {cookie_header}")
+                else:
+                    authdata = self._extract_authdata(final_headers, loginconfig)
 
                 if self.relog:
                     p = Process(target=self._do_relog, args=(loginconfig, ipaddress, self.running_flag))
