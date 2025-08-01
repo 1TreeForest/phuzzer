@@ -147,6 +147,11 @@ class Reporter(Thread):
             outstr += f" {self.successcnt} startups"
         if self.failedseedcnt > 0:
             outstr += f" {self.failedseedcnt} bad seeds"
+            # save crashes to file
+            with open(os.path.join(self.work_dir, "fuzzer-master", "crashes", "id_init"), "w") as f:
+                # save seed content
+                with open(os.path.join(self.work_dir, "initial_seeds", "seed-0"), "r") as seed_file:
+                    f.write(seed_file.read())
         if self.weakseedcnt > 0:
             outstr += f" {self.weakseedcnt} weak seeds"
         outstr += f" afl log size {self.logfilesize}b "
