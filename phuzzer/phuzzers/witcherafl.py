@@ -757,11 +757,40 @@ class WitcherAFL(AFL):
         url = loginconfig["url"]
         url = url.replace("@@PORT_INCREMENT@@", str(18080))
 
-        if "getData" in loginconfig and loginconfig['getData']:
-            url += f"?{loginconfig['getData']}"
-
         if ipaddress:
             url = url.replace("127.0.0.1", ipaddress)
+
+        # First, perform initial GET request to obtain cookies (similar to POC utils pattern)
+        initial_cookies = {}
+        if not relogging:  # Only do initial GET on first login attempt
+            print(f"\033[36mPerforming initial GET request to obtain session cookies\033[0m")
+            initial_url = url.split('?')[0]  # Remove any query parameters for initial GET
+            
+            opener = urllib.request.build_opener(NoRedirection)
+            urllib.request.install_opener(opener)
+            
+            try:
+                initial_req = urllib.request.Request(initial_url, None, loginconfig.get("headers", {}), method="GET")
+                initial_response = urllib.request.urlopen(initial_req)
+                initial_headers = initial_response.getheaders()
+                initial_body = initial_response.read()
+                
+                # Extract cookies from initial response
+                for header_name, header_value in initial_headers:
+                    if header_name.lower() == "set-cookie":
+                        cookie_part = header_value.split(';')[0].strip()
+                        if '=' in cookie_part:
+                            cookie_name, cookie_value = cookie_part.split('=', 1)
+                            initial_cookies[cookie_name] = cookie_value
+                            print(f"\033[33mObtained initial cookie: {cookie_name}={cookie_value}\033[0m")
+                
+                print(f"\033[32mInitial GET completed, obtained {len(initial_cookies)} cookies\033[0m")
+            except Exception as e:
+                print(f"\033[33mWarning: Initial GET request failed: {e}, continuing with login attempt\033[0m")
+
+        # Now proceed with the actual login request
+        if "getData" in loginconfig and loginconfig['getData']:
+            url += f"?{loginconfig['getData']}"
 
         post_data = loginconfig["postData"] if "postData" in loginconfig else ""
         original_post_data = post_data
@@ -775,7 +804,7 @@ class WitcherAFL(AFL):
         max_redirects = 3
         redirect_count = 0
         current_url = url
-        current_cookies = {}
+        current_cookies = initial_cookies.copy()  # Start with cookies from initial GET request
         final_headers = []
         final_body = b""
         
