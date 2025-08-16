@@ -1005,9 +1005,7 @@ class WitcherAFL(AFL):
                 try:
                     final_body, final_headers, collected_cookies = WitcherAFL._do_http_req_login(loginconfig, ipaddress)
                 except Exception as e:
-                    print(f"{e} while trying to login, retrying...")
-                    time.sleep(5)
-                    continue
+                    break
 
                 # Use collected cookies from redirect process as auth data if available
                 if collected_cookies:
